@@ -18,7 +18,7 @@
 # later only requires rewriting mod_storage functions, since all other
 # modules interact with storage only through save_record()/load_records().
 #
-# SCOPE NOTE: Blind mode is NOT implemented in this verison.
+# NOTE: Blind mode is NOT implemented in this verison.
 # The metadata module is structured so blind mode can be added later as a
 # conditional branch without restructuring - see comment in mod_metadata_ui.
 # =============================================================================
@@ -914,7 +914,49 @@ export_csv <- function(path = "goldeneye_export.csv") {
 
 ui <- fluidPage(
   useShinyjs(),
-  titlePanel("GoldenEye v2.0 - Mussel Colonization Analysis"),
+  #titlePanel("GoldenEye v2.0 - Mussel Colonization Image Analysis"),
+  titlePanel(
+    title = div(
+      # Row: logos on left, title block on right
+      div(
+        style = "display: flex; flex-direction: row; align-items: center;",
+        
+        # Logo column
+        div(
+          style = "display: flex; flex-direction: column; align-items: center; margin-right: 30px;",
+          a(img(src = "BofR-horiz.png", height = 50, style = "margin-bottom: 5px;"),
+            href = "http://www.usbr.gov"),
+          a(img(src = "dr_reed_associates_logo.jpg", height = 50, style = "margin-bottom: 0px;"),
+            href = "https://www.drreedinc.com/"),
+        ),
+        
+        # Title + contact block
+        div(
+          style = "flex-grow: 1;",
+          h2("GoldenEye - Mussel Colonization Image Analysis", style = "font-family:Segoe UI Semibold; font-size: 34px"),
+          tags$hr(style = "border-top: 1px solid #0a7e8c; margin-top: 10px; margin-bottom: 10px; opacity: 0.7"),
+          h4("Version 2.0.0", style = "font-size: 14px; font-style: italic"),
+          h5("For questions, please contact: Lillian McCormick | lmccormick@usbr.gov")
+        )
+      ),
+      
+      # Full-width instructions section (outside the row)
+      tags$hr(style = "border-top: 1px solid #0a7e8c; margin-top: 10px; margin-bottom: 10px; opacity: 0.7"),
+      h4("Instructions:"),
+      h5("1. Fill in station metadata on the side panel."),
+      h5("2. Upload the photo for analysis. Follow the image analysis steps, including selecting the corners
+         of the tag body, marking the reference ruler size, and tracing cutout (optional)."),
+      h5("3. Use the buttons to paint over any visible mussels, biofouling, or obscured areas that should not be counted.
+         You can hold the button to hide the mask and check your work."),
+      h5("4. Once finished marking the image, click Calculate Coverage and then Approve and Save Record. Your results can then be exported and saved."),
+    ),
+    windowTitle = "GoldenEye v 2.0.0"
+  ),
+  
+  tags$hr(style = "border-top: 3px solid #0a7e8c; margin-top: 10px; margin-bottom: 20px; opacity: 0.9"), 
+  
+  
+  
   sidebarLayout(
     sidebarPanel(
       width = 3,
@@ -938,6 +980,33 @@ ui <- fluidPage(
     )
   )
 )
+
+# ui <- fluidPage(
+#   useShinyjs(),
+#   titlePanel("GoldenEye v2.0 - Mussel Colonization Image Analysis"),
+#   sidebarLayout(
+#     sidebarPanel(
+#       width = 3,
+#       tags$h4("Metadata"),
+#       mod_metadata_ui("meta"),
+#       textOutput("date_consistency_warning"),
+#       tags$hr(),
+#       mod_qa_ui("qa")
+#     ),
+#     mainPanel(
+#       width = 9,
+#       mod_canvas_ui("canvas"),
+#       tags$hr(),
+#       tags$h4("Results Dashboard"),
+#       tableOutput("results_table"),
+#       actionButton("approve_record", "Approve & Save Record", class = "btn-success"),
+#       tags$hr(),
+#       tags$h4("Saved Records (this session)"),
+#       DTOutput("records_table"),
+#       downloadButton("download_csv", "Export CSV")
+#     )
+#   )
+# )
 
 server <- function(input, output, session) {
   
