@@ -1,9 +1,9 @@
 # =============================================================================
-# GoldenEye v2.0 - Mussel Treatment-Tag Colonization Monitoring
+# GoldenEye v2.0.2 - Mussel Treatment-Tag Colonization Monitoring
 # =============================================================================
 # Created by L. McCormick (lmccormick@usbr.gov) with original concept and v1
 # from Joe Hatfield (jhatfield@drreedinc.com)
-# v2.0 developed 2026/09/11
+# v2.0.2 developed 2026/09/21
 #
 # Single-file Shiny app organized into clearly separated module sections:
 #   1. Pure calculation functions (calc_geometry, calc_coverage) - unit-testable
@@ -18,10 +18,65 @@
 # later only requires rewriting mod_storage functions, since all other
 # modules interact with storage only through save_record()/load_records().
 #
-# NOTE: Blind mode is NOT implemented in this verison.
+# SCOPE NOTE: Blind mode is NOT implemented in this version.
 # The metadata module is structured so blind mode can be added later as a
 # conditional branch without restructuring - see comment in mod_metadata_ui.
+# Version History:
+# v 1.0.0: HTML tool made using AI
+# v 2.0.0: Modified for RShiny, corrected overestimating drawing tool calculations
+#          and refined experimental analysis variables to fit analysis.
+# v 2.0.1: Updated visual layout of app for Reclamation requirements, including
+#          editing colors to be colorblind friendly, adding logos, version#,
+#          and contact information.
+# v 2.0.2: Updated tab tool to N-unlimited polygon, so wouldn't need to use obscure
+#          painting tool (pink drawing) to remove that space. Total area of tag
+#          will be corrected.
+#
 # =============================================================================
+
+
+
+# titlePanel(
+#   title = div(
+#     # Row: logos on left, title block on right
+#     div(
+#       style = "display: flex; flex-direction: row; align-items: center;",
+#       
+#       # Logo column
+#       div(
+#         style = "display: flex; flex-direction: column; align-items: center; margin-right: 30px;",
+#         a(img(src = "BofR-horiz.png", height = 50, style = "margin-bottom: 5px;"),
+#           href = "http://www.usbr.gov"),
+#         a(img(src = "dr_reed_associates_logo.jpg", height = 50, style = "margin-bottom: 0px;"),
+#           href = "https://www.drreedinc.com/"),
+#       ),
+#       
+#       # Title + contact block
+#       div(
+#         style = "flex-grow: 1;",
+#         h2("GoldenEye - Mussel Colonization Image Analysis", style = "font-family:Segoe UI Semibold; font-size: 34px"),
+#         tags$hr(style = "border-top: 1px solid #0a7e8c; margin-top: 10px; margin-bottom: 10px; opacity: 0.7"),
+#         h4("Version 2.0.2", style = "font-size: 14px; font-style: italic"),
+#         h5("For questions, please contact: Lillian McCormick | lmccormick@usbr.gov")
+#       )
+#     ),
+#     
+#     # Full-width instructions section (outside the row)
+#     tags$hr(style = "border-top: 1px solid #0a7e8c; margin-top: 10px; margin-bottom: 10px; opacity: 0.7"),
+#     h4("Instructions:"),
+#     h5("1. Fill in station metadata on the side panel."),
+#     h5("2. Upload the photo for analysis. Follow the image analysis steps, including selecting the corners
+#          of the tag body, marking the reference ruler size, and tracing cutout (optional)."),
+#     h5("3. Use the buttons to paint over any visible mussels, biofouling, or obscured areas that should not be counted.
+#          You can hold the button to hide the mask and check your work."),
+#     h5("4. Once finished marking the image, click Calculate Coverage and then Approve and Save Record. Your results can then be exported and saved."),
+#   ),
+#   windowTitle = "GoldenEye v 2.0.2"
+# ),
+# 
+# tags$hr(style = "border-top: 3px solid #0a7e8c; margin-top: 10px; margin-bottom: 20px; opacity: 0.9"), 
+# 
+
 
 library(shiny)
 library(shinyjs)
@@ -29,6 +84,11 @@ library(uuid)
 library(jsonlite)
 library(DT)
 library(base64enc)
+
+
+# =============================================================================
+# SECTION 0: point-payload normalization helpers
+# =============================================================================
 
 #' Normalizes a point list received from Shiny.setInputValue() JSON payload
 #' into a guaranteed plain R list of list(x=numeric, y=numeric) elements.
@@ -39,7 +99,7 @@ library(base64enc)
 #' structure, rather than reliably as a list of named pairs. Every downstream
 #' geometry function (polygon_area_px2, point_distance_px) expects a plain list
 #' of list(x=,y=) elements. Without this normalization step, type mismatches
-#' here were the root cause of the "is.character(txt) is not TRUE" errors -
+#' here were the root cause of earlier "is.character(txt) is not TRUE" errors -
 #' malformed/unexpected shapes were propagating into validate()/need() calls
 #' and other logic that assumed a specific list structure.
 #'
@@ -50,12 +110,8 @@ library(base64enc)
 normalize_points <- function(raw) {
   if (is.null(raw)) return(list())
   
-  # Case 1: already a plain list of list(x=,y=) elements (most common when
-  # jsonlite does NOT simplify, e.g. with a mix of point counts across fields)
   if (is.list(raw) && !is.data.frame(raw)) {
-    # Could be list(list(x=,y=), list(x=,y=), ...) OR a single list(x=,y=)
     if (!is.null(raw$x) && !is.null(raw$y) && is.numeric(raw$x) && length(raw$x) == 1) {
-      # Single point object, e.g. ruler_point_1 - wrap it for consistency
       return(list(list(x = as.numeric(raw$x), y = as.numeric(raw$y))))
     }
     out <- lapply(raw, function(pt) {
@@ -69,7 +125,6 @@ normalize_points <- function(raw) {
     return(out)
   }
   
-  # Case 2: jsonlite simplified the array into a data.frame with x, y columns
   if (is.data.frame(raw)) {
     if (!all(c("x", "y") %in% names(raw))) return(list())
     return(lapply(seq_len(nrow(raw)), function(i) {
@@ -77,7 +132,6 @@ normalize_points <- function(raw) {
     }))
   }
   
-  # Case 3: jsonlite simplified into a matrix
   if (is.matrix(raw)) {
     if (!all(c("x", "y") %in% colnames(raw))) return(list())
     return(lapply(seq_len(nrow(raw)), function(i) {
@@ -85,7 +139,6 @@ normalize_points <- function(raw) {
     }))
   }
   
-  # Unrecognized shape - fail safe rather than error
   list()
 }
 
@@ -105,9 +158,6 @@ normalize_single_point <- function(raw) {
 # =============================================================================
 
 #' Shoelace formula for polygon area in pixel^2.
-#' Works for any simple (non-self-intersecting) polygon: tag corners,
-#' tab corners, or cutout polygon all use this same function.
-#' @param points list of list(x=, y=) or data.frame with x,y columns
 polygon_area_px2 <- function(points) {
   df <- as.data.frame(do.call(rbind, lapply(points, function(p) c(x = p$x, y = p$y))))
   n <- nrow(df)
@@ -126,8 +176,6 @@ point_distance_px <- function(p1, p2) {
 }
 
 #' cm per rectified pixel, from ruler click points + known real-world distance.
-#' @param ruler_point_1,ruler_point_2 list(x=, y=) in RECTIFIED coordinate space
-#' @param ruler_known_distance_cm numeric, analyst-entered
 cm_per_rectified_px <- function(ruler_point_1, ruler_point_2, ruler_known_distance_cm) {
   px_dist <- point_distance_px(ruler_point_1, ruler_point_2)
   if (px_dist <= 0) {
@@ -138,12 +186,6 @@ cm_per_rectified_px <- function(ruler_point_1, ruler_point_2, ruler_known_distan
 
 #' Compute tag area (cm^2), handling single-region (Aluminum) and
 #' two-region composite (Plastic: body + tab), with optional cutout subtraction.
-#'
-#' @param body_corners list of 4 list(x=,y=) in rectified space
-#' @param tab_corners list of 4 list(x=,y=) in rectified space, or NULL for Aluminum
-#' @param cutout_polygon list of N list(x=,y=) in rectified space, or NULL if no cutout
-#' @param cm_per_px numeric scale factor from cm_per_rectified_px()
-#' @return list with body_area_cm2, tab_area_cm2, cutout_area_cm2, tag_area_cm2
 compute_tag_area <- function(body_corners, tab_corners = NULL, cutout_polygon = NULL, cm_per_px) {
   body_area_cm2 <- polygon_area_px2(body_corners) * cm_per_px^2
   
@@ -171,16 +213,6 @@ compute_tag_area <- function(body_corners, tab_corners = NULL, cutout_polygon = 
 }
 
 #' Compute coverage percentages from pixel-equivalent class totals.
-#' Pixel-equivalents should already be SUMMED ACROSS REGIONS (body+tab) by
-#' the caller before this function is invoked - this function does not know
-#' about regions, only about total class areas, per spec section 4.1.1.
-#'
-#' @param mussel_px,bio_px,obscured_px pixel-equivalent totals (summed across regions)
-#' @param total_tag_area_px total rectified tag area in px^2 (summed across regions,
-#'   NOT net of cutout in pixel space - cutout is handled by excluding it from
-#'   paintable area upstream, so obscured/mussel/bio pixel totals should already
-#'   reflect a canvas that excludes the cutout region)
-#' @return list of percentages + measurable_area_px + invariant check
 compute_coverage_pct <- function(mussel_px, bio_px, obscured_px, total_tag_area_px,
                                  tolerance_pct = 0.05) {
   if (total_tag_area_px <= 0) stop("total_tag_area_px must be positive.")
@@ -222,8 +254,6 @@ compute_mussel_area_cm2 <- function(tag_area_cm2, obscured_pct, mussel_pct) {
 }
 
 #' QA flag: does computed tag_area_cm2 deviate more than threshold_pct from target?
-#' Returns NA (not FALSE) if no target is configured, so callers can distinguish
-#' "not flagged because within tolerance" from "not flagged because no target set".
 check_area_qa_flag <- function(tag_area_cm2, target_cm2, threshold_pct = 0.05) {
   if (is.null(target_cm2) || is.na(target_cm2) || target_cm2 <= 0) {
     return(NA)
@@ -233,10 +263,6 @@ check_area_qa_flag <- function(tag_area_cm2, target_cm2, threshold_pct = 0.05) {
 }
 
 #' Validate that all observations for a given tag_id share the same date_deployed.
-#' @param records data.frame of existing records
-#' @param tag_id character
-#' @param new_date_deployed Date/character to check against existing records
-#' @return list(ok = logical, existing_date = value or NA, message = character)
 check_date_deployed_consistency <- function(records, tag_id, new_date_deployed) {
   existing <- records[records$tag_id == tag_id, ]
   if (nrow(existing) == 0) {
@@ -275,9 +301,7 @@ mod_metadata_ui <- function(id) {
     # NOTE ON BLIND MODE (deferred): when implemented, wrap the block below
     # in conditionalPanel(condition = "!input.blind_mode", ...) and add a
     # parallel minimal panel (filename + tag_id + side only) shown when
-    # blind_mode is TRUE. Metadata resolution would then happen server-side
-    # via a lookup table uploaded in a separate admin module, matched on
-    # filename or tag_id, and joined onto the record after submission.
+    # blind_mode is TRUE.
     textInput(ns("station_id"), "Station ID"),
     textInput(ns("tag_id"), "Tag ID (match photo notation)"),
     radioButtons(ns("side"), "Side", choices = c("A", "B"), inline = TRUE),
@@ -285,8 +309,8 @@ mod_metadata_ui <- function(id) {
                  choices = c("Aluminum", "Plastic"), inline = TRUE),
     dateInput(ns("date_deployed"), "Date Deployed"),
     dateInput(ns("observation_date"), "Observation Date", value = Sys.Date()),
-    timeInput <- textInput(ns("observation_time"), "Observation Time (HH:MM)",
-                           value = format(Sys.time(), "%H:%M")),
+    textInput(ns("observation_time"), "Observation Time (HH:MM)",
+              value = format(Sys.time(), "%H:%M")),
     selectInput(ns("treatment"), "Treatment",
                 choices = c("Control", "Barnacle Stop", "Nylon Stocking", "Other")),
     radioButtons(ns("reapply_schedule"), "Reapply Schedule",
@@ -300,7 +324,6 @@ mod_metadata_ui <- function(id) {
 mod_metadata_server <- function(id, existing_records) {
   moduleServer(id, function(input, output, session) {
     
-    # Live consistency check against existing records as tag_id/date change.
     date_check <- reactive({
       req(input$tag_id, input$date_deployed)
       check_date_deployed_consistency(existing_records(), input$tag_id, input$date_deployed)
@@ -311,7 +334,6 @@ mod_metadata_server <- function(id, existing_records) {
       if (!dc$ok) paste("WARNING:", dc$message) else ""
     })
     
-    # Bundles all metadata into one list for downstream use.
     metadata <- reactive({
       req(input$station_id, input$tag_id, input$date_deployed)
       list(
@@ -339,13 +361,12 @@ mod_metadata_server <- function(id, existing_records) {
 # =============================================================================
 # SECTION 3: mod_canvas - JS canvas bridge
 # =============================================================================
-# This is the most substantial JS/R integration point. The JS side handles
-# all interactive drawing (corners, ruler, cutout, paint/erase) and sends a
-# structured payload via Shiny.setInputValue(). This implementation uses a
-# hidden offscreen mask canvas with flat, fully opaque per-class colors and
-# getImageData() to count actual unique painted pixels (native Canvas2D API,
-# no external libraries) - this avoids double-counting overlapping strokes,
-# which a geometric "sum of brush circles" approach cannot do correctly.
+# Uses a hidden offscreen mask canvas with flat, fully opaque per-class colors
+# and getImageData() to count actual unique painted pixels (native Canvas2D
+# API, no external libraries) - this avoids double-counting overlapping
+# strokes. Colors use the Okabe-Ito colorblind-safe palette (orange/blue/
+# reddish-purple) rather than orange/green/purple, since orange and green
+# compress together under red-green color blindness.
 # =============================================================================
 
 mod_canvas_ui <- function(id) {
@@ -363,7 +384,8 @@ mod_canvas_ui <- function(id) {
     tags$div(
       style = "display:flex; gap:8px; flex-wrap: wrap; margin-bottom:8px;",
       actionButton(ns("mode_body"), "1. Select Body Corners"),
-      actionButton(ns("mode_tab"), "2. Select Tab Corners (Plastic only)"),
+      actionButton(ns("mode_tab"), "2. Trace Tab Outline (Plastic only)"),
+      actionButton(ns("finish_tab"), "Finish Tab Shape"),
       actionButton(ns("mode_ruler"), "3. Mark Ruler"),
       actionButton(ns("mode_cutout"), "4. Trace Cutout (optional)"),
       actionButton(ns("finish_cutout"), "Finish Cutout Shape"),
@@ -405,7 +427,6 @@ mod_canvas_ui <- function(id) {
     tags$div(
       tags$canvas(id = ns("main_canvas"), width = 1200, height = 800,
                   style = "border:1px solid #999; max-width:100%; cursor: crosshair;"),
-      # Hidden mask canvas - never displayed, used only for pixel-accurate class counting.
       tags$canvas(id = ns("mask_canvas"), width = 1200, height = 800,
                   style = "display:none;")
     ),
@@ -419,12 +440,8 @@ mod_canvas_ui <- function(id) {
 
 #' Generates the canvas JS as a plain string. Uses simple token replacement
 #' (gsub with fixed=TRUE) rather than sprintf(), because the JS body contains
-#' literal '%' characters (e.g. opacity label text, CSS-adjacent values) that
-#' sprintf() would otherwise misinterpret as format specifiers and error on.
-#' @param canvas_id full namespaced DOM id of the visible canvas
-#' @param mask_canvas_id full namespaced DOM id of the hidden mask canvas
-#' @param ns_prefix namespace prefix used for all other input/button ids,
-#'   e.g. "canvas-" (module id "canvas" produces ids like "canvas-mode_body")
+#' literal '%' characters that sprintf() would otherwise misinterpret as
+#' format specifiers and error on.
 mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
   js <- "
 (function() {
@@ -437,6 +454,7 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
   let mode = null; // 'body' | 'tab' | 'ruler' | 'cutout' | 'paint_mussel' | 'paint_bio' | 'paint_obscured' | 'erase'
   let bodyCorners = [];
   let tabCorners = [];
+  let tabFinished = false;
   let rulerPoints = [];
   let cutoutPoints = [];
   let cutoutFinished = false;
@@ -445,14 +463,11 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
   const BRUSH_RADIUS = 12;
 
   // Flat, fully opaque colors used ONLY on the hidden mask canvas for counting.
-  // Based on the Okabe-Ito colorblind-safe palette: orange and blue sit far
-  // apart on every major axis of color vision deficiency (unlike orange/green,
-  // which compress together under red-green color blindness, the most common
-  // form). Reddish-purple for obscured is likewise off the red-green axis.
+  // Based on the Okabe-Ito colorblind-safe palette.
   const MASK_COLORS = {
-    mussel:   'rgba(230,159,0,255)',   // Okabe-Ito orange
-    bio:      'rgba(0,114,178,255)',   // Okabe-Ito blue
-    obscured: 'rgba(204,121,167,255)'  // Okabe-Ito reddish purple
+    mussel:   'rgba(230,159,0,255)',
+    bio:      'rgba(0,114,178,255)',
+    obscured: 'rgba(204,121,167,255)'
   };
   const MASK_RGBA = {
     mussel:   [230,159,0,255],
@@ -474,11 +489,6 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (img) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    // Composite the mask on top for VISUAL feedback only, at analyst-controlled
-    // opacity (or fully hidden via the hide toggle). Counting always reads from
-    // maskCanvas directly via getImageData on its own opaque pixel data, so
-    // nothing about this display step can ever bias the actual measurements -
-    // this is purely so the analyst can see the underlying photo while painting.
     if (!maskHidden) {
       ctx.save();
       ctx.globalAlpha = maskOpacity;
@@ -487,7 +497,7 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
     }
 
     drawPolygon(bodyCorners, 'lime', true);
-    drawPolygon(tabCorners, 'cyan', true);
+    drawPolygon(tabCorners, 'cyan', tabFinished);
     drawPolygon(cutoutPoints, 'red', cutoutFinished);
 
     if (rulerPoints.length > 0) {
@@ -554,7 +564,7 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
     const pt = getCanvasCoords(evt);
     if (mode === 'body' && bodyCorners.length < 4) {
       bodyCorners.push(pt);
-    } else if (mode === 'tab' && tabCorners.length < 4) {
+    } else if (mode === 'tab' && !tabFinished) {
       tabCorners.push(pt);
     } else if (mode === 'ruler' && rulerPoints.length < 2) {
       rulerPoints.push(pt);
@@ -575,7 +585,6 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
     if (!isPainting) return;
     const pt = getCanvasCoords(evt);
 
-    // Never allow painting inside a finished cutout region - it is not tag surface.
     if (cutoutFinished && pointInPolygon(pt, cutoutPoints)) return;
 
     if (mode === 'erase') {
@@ -611,10 +620,6 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
     reader.readAsDataURL(file);
   }
 
-  // Pixel-accurate class counting via getImageData - counts ACTUAL unique
-  // painted pixels, so overlapping strokes of the same or different classes
-  // are never double-counted. Optionally restricted to a region polygon
-  // (Body vs Tab) by checking pointInPolygon per pixel.
   function countClassPixels(cls, regionPolygon) {
     const w = maskCanvas.width, h = maskCanvas.height;
     const imgData = maskCtx.getImageData(0, 0, w, h).data;
@@ -635,11 +640,8 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
   }
 
   function assemblePayload() {
-    const tabActive = tabCorners.length === 4;
+    const tabActive = tabFinished && tabCorners.length >= 3;
 
-    // Read the ruler distance value + unit and convert to cm BEFORE sending
-    // to R, so every downstream calculation only ever deals with centimeters
-    // regardless of what unit the analyst found convenient to type in.
     const rulerValueInput = document.getElementById(id('ruler_known_distance_value'));
     const rulerUnitRadios = document.querySelectorAll('input[name=\"' + id('ruler_unit') + '\"]');
     let rulerUnit = 'cm';
@@ -657,7 +659,6 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
       ruler_input_value_raw: rulerRawValue,
       ruler_input_unit_raw: rulerUnit,
       cutout_polygon: (cutoutFinished && cutoutPoints.length >= 3) ? cutoutPoints : null,
-      // Pixel-accurate counts, split by region if a tab exists, else all counted as Body.
       mussel_px_body: countClassPixels('mussel', tabActive ? bodyCorners : null),
       mussel_px_tab: tabActive ? countClassPixels('mussel', tabCorners) : 0,
       bio_px_body: countClassPixels('bio', tabActive ? bodyCorners : null),
@@ -673,7 +674,8 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
   }
 
   function resetAll() {
-    bodyCorners = []; tabCorners = []; rulerPoints = []; cutoutPoints = [];
+    bodyCorners = []; tabCorners = []; tabFinished = false;
+    rulerPoints = []; cutoutPoints = [];
     cutoutFinished = false;
     maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
     redraw();
@@ -691,6 +693,9 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
     });
     document.getElementById(id('mode_body')).addEventListener('click', () => setMode('body'));
     document.getElementById(id('mode_tab')).addEventListener('click', () => setMode('tab'));
+    document.getElementById(id('finish_tab')).addEventListener('click', function() {
+      if (tabCorners.length >= 3) { tabFinished = true; redraw(); }
+    });
     document.getElementById(id('mode_ruler')).addEventListener('click', () => setMode('ruler'));
     document.getElementById(id('mode_cutout')).addEventListener('click', () => setMode('cutout'));
     document.getElementById(id('finish_cutout')).addEventListener('click', function() {
@@ -703,7 +708,6 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
 
     document.getElementById(id('reset_canvas')).addEventListener('click', resetAll);
 
-    // Live opacity slider - purely visual, updates on every drag frame.
     const opacitySlider = document.getElementById(id('mask_opacity'));
     const opacityLabel = document.getElementById(id('mask_opacity_label'));
     if (opacitySlider) {
@@ -714,10 +718,6 @@ mod_canvas_js <- function(canvas_id, mask_canvas_id, ns_prefix) {
       });
     }
 
-    // Hide-mask toggle: press-and-hold to peek at the raw photo, release to
-    // resume painting view. Works with both mouse (mousedown/mouseup) and
-    // touch, and also supports a plain click as a fallback toggle for
-    // accessibility (some analysts may find press-and-hold awkward).
     const hideBtn = document.getElementById(id('toggle_hide_mask'));
     if (hideBtn) {
       let heldViaMouse = false;
@@ -767,8 +767,8 @@ mod_qa_ui <- function(id) {
   tagList(
     tags$h4("QA Status"),
     tableOutput(ns("qa_table")),
-    numericInput(ns("target_aluminum_cm2"), "Target area - Aluminum (cm²)", value = NA, min = 0),
-    numericInput(ns("target_plastic_cm2"), "Target area - Plastic (cm²)", value = NA, min = 0),
+    numericInput(ns("target_aluminum_cm2"), "Target area - Aluminum (cm\u00b2)", value = NA, min = 0),
+    numericInput(ns("target_plastic_cm2"), "Target area - Plastic (cm\u00b2)", value = NA, min = 0),
     helpText("Targets are manually configured, not computed from data (per spec section 7). ",
              "Leave blank to disable the QA flag until a target is set.")
   )
@@ -780,9 +780,6 @@ mod_qa_server <- function(id, tag_material, tag_area_cm2, invariant_ok, invarian
     area_flag <- reactive({
       mat <- tag_material()
       area <- tag_area_cm2()
-      # Guard explicitly rather than relying on req() alone: if either input
-      # isn't a valid length-1 value yet, return NA (not NULL) so downstream
-      # code always has a consistent, checkable type to work with.
       if (is.null(mat) || length(mat) != 1 || is.na(mat) ||
           is.null(area) || length(area) != 1 || is.na(area)) {
         return(NA)
@@ -798,12 +795,6 @@ mod_qa_server <- function(id, tag_material, tag_area_cm2, invariant_ok, invarian
       inv_ok <- invariant_ok()
       flag <- area_flag()
       
-      # Build every Value entry as an explicit, guaranteed-length-1 character
-      # string. This is defensive on purpose: renderTable's HTML generation
-      # requires a character vector, and any NULL/NA/logical(0) slipping
-      # through here (e.g. during a reactive's transient invalid state right
-      # after a button click) previously caused an opaque
-      # "is.character(txt) is not TRUE" error with no useful traceback.
       area_str <- if (is.null(area) || length(area) != 1 || is.na(area)) {
         "Pending calculation"
       } else {
@@ -845,66 +836,84 @@ mod_qa_server <- function(id, tag_material, tag_area_cm2, invariant_ok, invarian
 
 
 # =============================================================================
-# SECTION 5: mod_storage - local RDS-backed storage
+# SECTION 5: mod_storage - IN-SESSION ONLY storage (no server-side persistence)
+# =============================================================================
+# This app will be publicly hosted and may be used by multiple analysts
+# concurrently. Rather than writing to a shared file on disk - which would
+# create write collisions between simultaneous users and would accumulate
+# every user's photos/data indefinitely on a public server - all records and
+# marked images are held ONLY in that browser session's memory (via
+# reactiveVal, scoped per-session automatically by Shiny).
+#
+# Nothing is written to disk server-side, ever, by any function in this
+# section. The analyst MUST export their CSV + images zip before closing the
+# browser tab, or the data is gone - there is no server-side backup.
+#
+# If a persistent, multi-user-safe shared database is wanted later (e.g. once
+# this moves off public hosting to a controlled research-team server), the
+# natural upgrade is a real database (SQLite/Postgres) with row-level locking
+# or a proper transactional write path - NOT a return to shared storage on disk.
 # =============================================================================
 
-STORAGE_DIR <- "data"
-RECORDS_PATH <- file.path(STORAGE_DIR, "goldeneye_records.rds")
-IMAGES_DIR <- file.path(STORAGE_DIR, "images")
-
-ensure_storage_dirs <- function() {
-  if (!dir.exists(STORAGE_DIR)) dir.create(STORAGE_DIR, recursive = TRUE)
-  if (!dir.exists(IMAGES_DIR)) dir.create(IMAGES_DIR, recursive = TRUE)
+#' Returns an empty records data.frame with the correct schema. Used to
+#' initialize each session's in-memory reactiveVal - never read from or
+#' written to disk.
+empty_records_df <- function() {
+  data.frame(
+    analysis_id = character(), tag_id = character(), side = character(),
+    station_id = character(), tag_material = character(),
+    treatment = character(), reapply_schedule = character(),
+    depth = numeric(), date_deployed = character(), observation_datetime = character(),
+    body_area_cm2 = numeric(), tab_area_cm2 = numeric(), cutout_area_cm2 = numeric(),
+    tag_area_cm2 = numeric(), tag_area_qa_flag = logical(),
+    mussel_cover_pct = numeric(), biofouling_cover_pct = numeric(),
+    clean_substrate_pct = numeric(), obscured_pct = numeric(),
+    mussel_area_cm2 = numeric(), blind_mode_used = logical(),
+    analyst = character(), review_status = character(),
+    created_at = character(), software_version = character(),
+    ruler_input_value_raw = numeric(), ruler_input_unit_raw = character(),
+    marked_image_filename = character(),
+    stringsAsFactors = FALSE
+  )
 }
 
-load_records <- function() {
-  ensure_storage_dirs()
-  if (!file.exists(RECORDS_PATH)) {
-    return(data.frame(
-      analysis_id = character(), tag_id = character(), side = character(),
-      station_id = character(), tag_material = character(),
-      treatment = character(), reapply_schedule = character(),
-      depth = numeric(), date_deployed = character(), observation_datetime = character(),
-      body_area_cm2 = numeric(), tab_area_cm2 = numeric(), cutout_area_cm2 = numeric(),
-      tag_area_cm2 = numeric(), tag_area_qa_flag = logical(),
-      mussel_cover_pct = numeric(), biofouling_cover_pct = numeric(),
-      clean_substrate_pct = numeric(), obscured_pct = numeric(),
-      mussel_area_cm2 = numeric(), blind_mode_used = logical(),
-      analyst = character(), review_status = character(),
-      created_at = character(), software_version = character(),
-      ruler_input_value_raw = numeric(), ruler_input_unit_raw = character(),
-      marked_image_path = character(),
-      stringsAsFactors = FALSE
-    ))
-  }
-  readRDS(RECORDS_PATH)
-}
-
-save_record <- function(record_row) {
-  ensure_storage_dirs()
-  existing <- load_records()
-  updated <- rbind(existing, as.data.frame(record_row, stringsAsFactors = FALSE))
-  saveRDS(updated, RECORDS_PATH)
-  invisible(updated)
-}
-
-save_marked_image <- function(data_url, analysis_id) {
-  ensure_storage_dirs()
-  # data_url format: "data:image/png;base64,...."
-  # Using base64enc::base64decode explicitly (not jsonlite) since that is the
-  # function verified to exist with this exact name/signature - avoids relying
-  # on an unverified cross-package function name for something this important.
+#' Decodes a marked-image data URL into a raw vector, held in memory only.
+#' Does NOT write to any server-side path.
+#' @param data_url "data:image/png;base64,...."
+#' @return raw vector of PNG bytes
+decode_marked_image <- function(data_url) {
   b64 <- sub("^data:image/png;base64,", "", data_url)
-  raw <- base64enc::base64decode(b64)
-  path <- file.path(IMAGES_DIR, paste0(analysis_id, ".png"))
-  writeBin(as.raw(raw), path)
-  path
+  as.raw(base64enc::base64decode(b64))
 }
 
-export_csv <- function(path = "goldeneye_export.csv") {
-  records <- load_records()
-  write.csv(records, path, row.names = FALSE)
-  path
+#' Builds a zip file containing the CSV export and all marked-image PNGs for
+#' the current in-memory session, at a temp path suitable for downloadHandler.
+#' The temp working directory used to build the zip is removed immediately
+#' after (on.exit), so nothing lingers on the server's disk after download.
+#' @param records data.frame of this session's records
+#' @param images_list named list: analysis_id -> raw PNG bytes (in-memory)
+#' @param zip_path output path for the zip file
+build_session_export_zip <- function(records, images_list, zip_path) {
+  tmp_dir <- tempfile("goldeneye_export_")
+  dir.create(tmp_dir)
+  on.exit(unlink(tmp_dir, recursive = TRUE), add = TRUE)
+  
+  csv_path <- file.path(tmp_dir, "goldeneye_records.csv")
+  write.csv(records, csv_path, row.names = FALSE)
+  
+  images_dir <- file.path(tmp_dir, "marked_images")
+  dir.create(images_dir)
+  for (aid in names(images_list)) {
+    img_path <- file.path(images_dir, paste0(aid, ".png"))
+    writeBin(images_list[[aid]], img_path)
+  }
+  
+  files_to_zip <- list.files(tmp_dir, recursive = TRUE, full.names = FALSE)
+  old_wd <- setwd(tmp_dir)
+  on.exit(setwd(old_wd), add = TRUE)
+  utils::zip(zipfile = zip_path, files = files_to_zip)
+  
+  zip_path
 }
 
 
@@ -914,13 +923,13 @@ export_csv <- function(path = "goldeneye_export.csv") {
 
 ui <- fluidPage(
   useShinyjs(),
-  #titlePanel("GoldenEye v2.0 - Mussel Colonization Image Analysis"),
+  #titlePanel("GoldenEye v2.0 - Mussel Colonization Analysis"),
   titlePanel(
     title = div(
       # Row: logos on left, title block on right
       div(
         style = "display: flex; flex-direction: row; align-items: center;",
-        
+
         # Logo column
         div(
           style = "display: flex; flex-direction: column; align-items: center; margin-right: 30px;",
@@ -929,32 +938,31 @@ ui <- fluidPage(
           a(img(src = "dr_reed_associates_logo.jpg", height = 50, style = "margin-bottom: 0px;"),
             href = "https://www.drreedinc.com/"),
         ),
-        
+
         # Title + contact block
         div(
           style = "flex-grow: 1;",
           h2("GoldenEye - Mussel Colonization Image Analysis", style = "font-family:Segoe UI Semibold; font-size: 34px"),
           tags$hr(style = "border-top: 1px solid #0a7e8c; margin-top: 10px; margin-bottom: 10px; opacity: 0.7"),
-          h4("Version 2.0.0", style = "font-size: 14px; font-style: italic"),
+          h4("Version 2.0.2", style = "font-size: 14px; font-style: italic"),
           h5("For questions, please contact: Lillian McCormick | lmccormick@usbr.gov")
         )
       ),
-      
+
       # Full-width instructions section (outside the row)
       tags$hr(style = "border-top: 1px solid #0a7e8c; margin-top: 10px; margin-bottom: 10px; opacity: 0.7"),
       h4("Instructions:"),
       h5("1. Fill in station metadata on the side panel."),
       h5("2. Upload the photo for analysis. Follow the image analysis steps, including selecting the corners
-         of the tag body, marking the reference ruler size, and tracing cutout (optional)."),
+           of the tag body, marking the reference ruler size, and tracing cutout (optional)."),
       h5("3. Use the buttons to paint over any visible mussels, biofouling, or obscured areas that should not be counted.
-         You can hold the button to hide the mask and check your work."),
+           You can hold the button to hide the mask and check your work."),
       h5("4. Once finished marking the image, click Calculate Coverage and then Approve and Save Record. Your results can then be exported and saved."),
     ),
-    windowTitle = "GoldenEye v 2.0.0"
+    windowTitle = "GoldenEye v 2.0.2"
   ),
-  
-  tags$hr(style = "border-top: 3px solid #0a7e8c; margin-top: 10px; margin-bottom: 20px; opacity: 0.9"), 
-  
+
+  tags$hr(style = "border-top: 3px solid #0a7e8c; margin-top: 10px; margin-bottom: 20px; opacity: 0.9"),
   
   
   sidebarLayout(
@@ -975,47 +983,28 @@ ui <- fluidPage(
       actionButton("approve_record", "Approve & Save Record", class = "btn-success"),
       tags$hr(),
       tags$h4("Saved Records (this session)"),
+      tags$div(
+        style = "background:#fff3cd; border:1px solid #ffc107; padding:8px; border-radius:4px; margin-bottom:8px;",
+        tags$strong("\u26A0 Nothing is saved on the server."),
+        " All records exist only in this browser session. Export your csv + images ",
+        "before closing this tab, or your data will be lost."
+      ),
       DTOutput("records_table"),
-      downloadButton("download_csv", "Export CSV")
+      downloadButton("download_csv", "Export Session Data (csv + images, .zip)")
     )
   )
 )
 
-# ui <- fluidPage(
-#   useShinyjs(),
-#   titlePanel("GoldenEye v2.0 - Mussel Colonization Image Analysis"),
-#   sidebarLayout(
-#     sidebarPanel(
-#       width = 3,
-#       tags$h4("Metadata"),
-#       mod_metadata_ui("meta"),
-#       textOutput("date_consistency_warning"),
-#       tags$hr(),
-#       mod_qa_ui("qa")
-#     ),
-#     mainPanel(
-#       width = 9,
-#       mod_canvas_ui("canvas"),
-#       tags$hr(),
-#       tags$h4("Results Dashboard"),
-#       tableOutput("results_table"),
-#       actionButton("approve_record", "Approve & Save Record", class = "btn-success"),
-#       tags$hr(),
-#       tags$h4("Saved Records (this session)"),
-#       DTOutput("records_table"),
-#       downloadButton("download_csv", "Export CSV")
-#     )
-#   )
-# )
-
 server <- function(input, output, session) {
   
-  # Defined early, before any reactive that uses it - R does not hoist
-  # function definitions the way some languages do, so this must come
-  # before calc_results() below, which relies on it.
+  # Defined early, before any reactive that uses it.
   `%||%` <- function(a, b) if (is.null(a)) b else a
   
-  records_reactive <- reactiveVal(load_records())
+  # SESSION-SCOPED, IN-MEMORY ONLY. Each browser session gets its own fresh
+  # reactiveVal() starting from empty_records_df() - nothing is read from or
+  # written to disk anywhere in this app.
+  records_reactive <- reactiveVal(empty_records_df())
+  images_reactive <- reactiveVal(list())
   
   meta <- mod_metadata_server("meta", existing_records = records_reactive)
   canvas <- mod_canvas_server("canvas")
@@ -1031,27 +1020,19 @@ server <- function(input, output, session) {
     md <- meta$metadata()
     req(p, md)
     
-    # Normalize every point field from the raw JSON payload BEFORE any
-    # length()/validate() checks run. This is the fix for the
-    # "is.character(txt) is not TRUE" error: raw JSON arrays of {x,y} points
-    # can be deserialized by jsonlite as data.frames, matrices, or lists
-    # depending on shape, and validate()/need() calls downstream were
-    # receiving inconsistent types as a result. normalize_points() always
-    # returns a plain list, so length() and every geometry function below
-    # gets a guaranteed, consistent shape to work with.
     body_corners <- normalize_points(p$body_corners)
     tab_corners_raw <- normalize_points(p$tab_corners)
-    tab_corners <- if (length(tab_corners_raw) == 4) tab_corners_raw else NULL
+    # Tab is now a free-form N-point polygon (>= 3 points), not a fixed
+    # 4-corner quadrilateral - it needs to trace curved tab shapes (e.g.
+    # cattle ear tag hole-tabs) more accurately than a straight-edged
+    # quadrilateral can. polygon_area_px2 (shoelace formula) already handles
+    # any point count correctly, so no change is needed there.
+    tab_corners <- if (length(tab_corners_raw) >= 3) tab_corners_raw else NULL
     cutout_polygon_raw <- normalize_points(p$cutout_polygon)
     cutout_polygon <- if (length(cutout_polygon_raw) >= 3) cutout_polygon_raw else NULL
     ruler_point_1 <- normalize_single_point(p$ruler_point_1)
     ruler_point_2 <- normalize_single_point(p$ruler_point_2)
     
-    # Explicit, single validation block using plain if/stop with guaranteed
-    # character messages, rather than chained validate()/need() calls - this
-    # is more verbose but each message is constructed directly as a literal
-    # string, so there is no path by which a non-character value could reach
-    # Shiny's internal rendering and trigger the is.character(txt) assertion.
     validation_errors <- character(0)
     if (length(body_corners) != 4) {
       validation_errors <- c(validation_errors, "Please select all 4 body corners before calculating.")
@@ -1060,7 +1041,7 @@ server <- function(input, output, session) {
       validation_errors <- c(validation_errors, "Please mark both ruler points before calculating.")
     }
     if (identical(md$tag_material, "Plastic") && is.null(tab_corners)) {
-      validation_errors <- c(validation_errors, "Plastic tags require 4 tab corners in addition to body corners.")
+      validation_errors <- c(validation_errors, "Plastic tags require a traced tab outline (at least 3 points) in addition to body corners.")
     }
     if (length(validation_errors) > 0) {
       validate(need(FALSE, paste(validation_errors, collapse = " ")))
@@ -1075,8 +1056,6 @@ server <- function(input, output, session) {
       cm_per_px = cm_per_px
     )
     
-    # Sum pixel-equivalents across regions BEFORE computing percentages,
-    # per spec section 4.1.1 - single combined invariant check, not two.
     mussel_px <- (p$mussel_px_body %||% 0) + (p$mussel_px_tab %||% 0)
     bio_px <- (p$bio_px_body %||% 0) + (p$bio_px_tab %||% 0)
     obscured_px <- (p$obscured_px_body %||% 0) + (p$obscured_px_tab %||% 0)
@@ -1104,9 +1083,9 @@ server <- function(input, output, session) {
   output$results_table <- renderTable({
     r <- calc_results()
     data.frame(
-      Metric = c("Tag Area (cm²)", "Body Area (cm²)", "Tab Area (cm²)", "Cutout Area (cm²)",
+      Metric = c("Tag Area (cm\u00b2)", "Body Area (cm\u00b2)", "Tab Area (cm\u00b2)", "Cutout Area (cm\u00b2)",
                  "Mussel Cover (%)", "Biofouling Cover (%)", "Clean Substrate (%)",
-                 "Obscured (%)", "Est. Mussel Area (cm²)"),
+                 "Obscured (%)", "Est. Mussel Area (cm\u00b2)"),
       Value = c(
         sprintf("%.2f", r$tag_area_cm2),
         sprintf("%.2f", r$body_area_cm2),
@@ -1119,16 +1098,11 @@ server <- function(input, output, session) {
         sprintf("%.2f", r$mussel_area_cm2)
       )
     )
-  })
+  }, sanitize.text.function = function(x) x)
   
   observeEvent(input$approve_record, {
-    # Entire save operation is wrapped in tryCatch so that ANY failure - a
-    # missing package function, a bad path, malformed payload data, etc. -
-    # surfaces as an on-screen modal instead of ever being able to propagate
-    # up as an uncaught error. An uncaught error inside an observeEvent can,
-    # in some Shiny configurations, terminate the session/websocket rather
-    # than displaying Shiny's usual red error box, which is almost certainly
-    # what caused the app window to close with no visible error previously.
+    # Entire save operation is wrapped in tryCatch so that ANY failure
+    # surfaces as an on-screen modal instead of an uncaught error.
     tryCatch({
       r <- calc_results()
       md <- meta$metadata()
@@ -1147,16 +1121,22 @@ server <- function(input, output, session) {
       analysis_id <- uuid::UUIDgenerate()
       p <- canvas$payload()
       
-      marked_image_path <- tryCatch(
-        save_marked_image(p$marked_image_data_url, analysis_id),
-        error = function(e) {
-          showNotification(
-            paste("Warning: could not save marked image -", conditionMessage(e)),
-            type = "warning", duration = NULL
-          )
-          NA_character_
-        }
-      )
+      # Decode marked image into memory (NOT written to any server-side path)
+      # and stash it in this session's images_reactive list, keyed by
+      # analysis_id, so it can be bundled into the zip export later.
+      marked_image_filename <- tryCatch({
+        raw_png <- decode_marked_image(p$marked_image_data_url)
+        current_images <- images_reactive()
+        current_images[[analysis_id]] <- raw_png
+        images_reactive(current_images)
+        paste0(analysis_id, ".png")
+      }, error = function(e) {
+        showNotification(
+          paste("Warning: could not process marked image -", conditionMessage(e)),
+          type = "warning", duration = NULL
+        )
+        NA_character_
+      })
       
       new_record <- list(
         analysis_id = analysis_id,
@@ -1183,19 +1163,23 @@ server <- function(input, output, session) {
         analyst = md$analyst,
         review_status = "Draft",
         created_at = as.character(Sys.time()),
-        software_version = "GoldenEye v2.0",
-        marked_image_path = if (is.na(marked_image_path)) NA_character_ else marked_image_path
+        software_version = "GoldenEye v2.0.2",
+        ruler_input_value_raw = p$ruler_input_value_raw %||% NA_real_,
+        ruler_input_unit_raw = p$ruler_input_unit_raw %||% NA_character_,
+        marked_image_filename = if (is.na(marked_image_filename)) NA_character_ else marked_image_filename
       )
       
-      save_record(new_record)
-      records_reactive(load_records())
+      # In-memory append only - this IS the entire persistence mechanism.
+      # No disk write, no shared file, no call to any save_* function.
+      updated <- rbind(records_reactive(), as.data.frame(new_record, stringsAsFactors = FALSE))
+      records_reactive(updated)
       
-      showNotification("Record saved.", type = "message")
+      showNotification(
+        "Record saved to this session. Remember to export your CSV/images before closing the browser tab - nothing is saved on the server.",
+        type = "message", duration = 8
+      )
       
     }, error = function(e) {
-      # traceback() here writes the full call stack to the R console (not the
-      # browser) so we can see exactly which function call produced the error,
-      # rather than only seeing the final, unhelpful "is.character(txt)" message.
       message("=== approve_record error ===")
       message(conditionMessage(e))
       print(sys.calls())
@@ -1215,10 +1199,11 @@ server <- function(input, output, session) {
   })
   
   output$download_csv <- downloadHandler(
-    filename = function() paste0("goldeneye_export_", Sys.Date(), ".csv"),
+    filename = function() paste0("goldeneye_export_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".zip"),
     content = function(file) {
-      write.csv(records_reactive(), file, row.names = FALSE)
-    }
+      build_session_export_zip(records_reactive(), images_reactive(), file)
+    },
+    contentType = "application/zip"
   )
 }
 
