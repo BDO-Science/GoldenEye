@@ -937,6 +937,8 @@ ui <- fluidPage(
             href = "http://www.usbr.gov"),
           a(img(src = "dr_reed_associates_logo.jpg", height = 50, style = "margin-bottom: 0px;"),
             href = "https://www.drreedinc.com/"),
+          a(img(src = "ICF_COLOR_Logo.jpg", height = 50, style = "margin-bottom: 0px;"),
+            href = "https://www.icf.com//"),
         ),
 
         # Title + contact block
