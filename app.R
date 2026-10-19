@@ -1,11 +1,12 @@
 # =============================================================================
 # GoldenEye v2.0.2 - Mussel Treatment-Tag Colonization Monitoring
 # =============================================================================
+# 
 # Created by L. McCormick (lmccormick@usbr.gov) with original concept and v1
 # from Joe Hatfield (jhatfield@drreedinc.com)
 # v2.0.2 developed 2026/09/21
 #
-# Single-file Shiny app organized into clearly separated module sections:
+# Shiny app developed into modules for different aspects of analysis
 #   1. Pure calculation functions (calc_geometry, calc_coverage) - unit-testable
 #   2. mod_metadata   - station/tag/treatment/material/depth/side inputs
 #   3. mod_canvas     - JS canvas bridge (corners, ruler, cutout, paint)
@@ -18,9 +19,11 @@
 # later only requires rewriting mod_storage functions, since all other
 # modules interact with storage only through save_record()/load_records().
 #
-# SCOPE NOTE: Blind mode is NOT implemented in this version.
+# This version doesn't include an option for "blind mode", where the treatment
+# is not displayed in the photo name. Right now, photos are obvious, at least for
+# nylon treatments.
 # The metadata module is structured so blind mode can be added later as a
-# conditional branch without restructuring - see comment in mod_metadata_ui.
+# conditional branch without restructuring
 # Version History:
 # v 1.0.0: HTML tool made using AI
 # v 2.0.0: Modified for RShiny, corrected overestimating drawing tool calculations
@@ -35,7 +38,7 @@
 # =============================================================================
 
 
-
+# Save for future iterations- standard Reclamation shiny app title structure
 # titlePanel(
 #   title = div(
 #     # Row: logos on left, title block on right
@@ -93,7 +96,7 @@ library(base64enc)
 #' Normalizes a point list received from Shiny.setInputValue() JSON payload
 #' into a guaranteed plain R list of list(x=numeric, y=numeric) elements.
 #'
-#' WHY THIS EXISTS: Shiny's default JSON deserialization (via jsonlite) applies
+#' Shiny's default JSON deserialization (via jsonlite) applies
 #' automatic simplification to arrays of objects - a JS array of {x,y} points
 #' can arrive as a data.frame, a matrix, or a list depending on point count and
 #' structure, rather than reliably as a list of named pairs. Every downstream
@@ -107,6 +110,7 @@ library(base64enc)
 #'   a list of lists, or a single list(x=,y=) if simplified to one point)
 #' @return a plain list of list(x=,y=) elements, or an empty list if raw is
 #'   NULL/empty/unparseable - NEVER errors, so callers can safely check length()
+
 normalize_points <- function(raw) {
   if (is.null(raw)) return(list())
   
@@ -154,7 +158,7 @@ normalize_single_point <- function(raw) {
 # =============================================================================
 # SECTION 1: PURE CALCULATION FUNCTIONS
 # These have no Shiny dependencies and should be unit-tested independently
-# (e.g., with testthat) exactly as specified in the handoff doc, section 9.
+# (e.g., with testthat)
 # =============================================================================
 
 #' Shoelace formula for polygon area in pixel^2.
@@ -365,8 +369,7 @@ mod_metadata_server <- function(id, existing_records) {
 # and getImageData() to count actual unique painted pixels (native Canvas2D
 # API, no external libraries) - this avoids double-counting overlapping
 # strokes. Colors use the Okabe-Ito colorblind-safe palette (orange/blue/
-# reddish-purple) rather than orange/green/purple, since orange and green
-# compress together under red-green color blindness.
+# reddish-purple)
 # =============================================================================
 
 mod_canvas_ui <- function(id) {
@@ -838,7 +841,7 @@ mod_qa_server <- function(id, tag_material, tag_area_cm2, invariant_ok, invarian
 # =============================================================================
 # SECTION 5: mod_storage - IN-SESSION ONLY storage (no server-side persistence)
 # =============================================================================
-# This app will be publicly hosted and may be used by multiple analysts
+# Publicly hosted app; may be used by multiple analysts
 # concurrently. Rather than writing to a shared file on disk - which would
 # create write collisions between simultaneous users and would accumulate
 # every user's photos/data indefinitely on a public server - all records and
@@ -848,11 +851,6 @@ mod_qa_server <- function(id, tag_material, tag_area_cm2, invariant_ok, invarian
 # Nothing is written to disk server-side, ever, by any function in this
 # section. The analyst MUST export their CSV + images zip before closing the
 # browser tab, or the data is gone - there is no server-side backup.
-#
-# If a persistent, multi-user-safe shared database is wanted later (e.g. once
-# this moves off public hosting to a controlled research-team server), the
-# natural upgrade is a real database (SQLite/Postgres) with row-level locking
-# or a proper transactional write path - NOT a return to shared storage on disk.
 # =============================================================================
 
 #' Returns an empty records data.frame with the correct schema. Used to
